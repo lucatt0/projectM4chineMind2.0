@@ -1,9 +1,9 @@
 import { Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
-import Calendar from './pages/Calendar';
 import Stock from './pages/Stock';
 import Operators from './pages/Operators';
+import MaintenancePage from './pages/Maintenance';
 
 function App() {
   return (
@@ -13,9 +13,9 @@ function App() {
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-100 p-4">
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/calendar" element={<Calendar />} />
             <Route path="/stock" element={<Stock />} />
             <Route path="/operators" element={<Operators />} />
+            <Route path="/maintenance" element={<MaintenancePage />} />
           </Routes>
         </main>
       </div>

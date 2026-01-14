@@ -2,9 +2,9 @@ import { NavLink } from 'react-router-dom';
 
 const navigation = [
     { name: 'Machines', href: '/', icon: 'M' },
-    { name: 'Calendar', href: '/calendar', icon: 'C' },
     { name: 'Stock', href: '/stock', icon: 'S' },
     { name: 'Operators', href: '/operators', icon: 'O' },
+    { name: 'Maintenance', href: '/maintenance', icon: 'C' },
 ]
 
 function Sidebar() {

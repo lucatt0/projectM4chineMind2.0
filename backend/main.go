@@ -6,27 +6,17 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 )
 
 // Machine represents an industrial machine.
 type Machine struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	OperatorID string `json:"operatorId,omitempty"`
-}
-
-// Maintenance represents a scheduled maintenance for a machine.
-type Maintenance struct {
-	ID           string `json:"id"`
-	MachineID    string `json:"machineId"`
-	Date         string `json:"date"` // YYYY-MM-DD
-	Observations string `json:"observations"`
-	StockItemID  string `json:"stockItemId"`
-	QuantityUsed int    `json:"quantityUsed"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Status     string   `json:"status"`
+	OperatorID string   `json:"operatorId,omitempty"`
+	Sensors    []Sensor `json:"sensors"`
 }
 
 // StockItem represents an item in the stock.
@@ -45,12 +35,34 @@ type Operator struct {
 	Name string `json:"name"`
 }
 
+// Sensor represents a sensor that can be attached to a machine.
+type Sensor struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"` // e.g., "temperature", "pressure", "vibration"
+}
+
+// Maintenance represents a maintenance schedule for a machine.
+type Maintenance struct {
+	ID          string          `json:"id"`
+	MachineID   string          `json:"machineId"`
+	Date        string          `json:"date"`
+	Description string          `json:"description"`
+	UsedStock   []UsedStockItem `json:"usedStock"`
+}
+
+// UsedStockItem represents a stock item used in a maintenance.
+type UsedStockItem struct {
+	StockItemID string `json:"stockItemId"`
+	Quantity    int    `json:"quantity"`
+}
+
 var (
-	machines     = make(map[string]Machine)
-	maintenances = make(map[string]Maintenance)
-	stock        = make(map[string]StockItem)
-	operators    = make(map[string]Operator)
-	mutex        = &sync.Mutex{}
+	machines    = make(map[string]Machine)
+	stock       = make(map[string]StockItem)
+	operators   = make(map[string]Operator)
+	maintenance = make(map[string]Maintenance)
+	mutex       = &sync.Mutex{}
 )
 
 func main() {
@@ -61,12 +73,9 @@ func main() {
 	operators[opID2] = Operator{ID: opID2, Name: "Jane Smith"}
 
 	id1 := uuid.New().String()
-	machines[id1] = Machine{ID: id1, Name: "CNC-001", Status: "active", OperatorID: opID1}
+	machines[id1] = Machine{ID: id1, Name: "CNC-001", Status: "active", OperatorID: opID1, Sensors: []Sensor{{ID: uuid.New().String(), Name: "Temp-01", Type: "temperature"}}}
 	id2 := uuid.New().String()
 	machines[id2] = Machine{ID: id2, Name: "Welder-005", Status: "inactive"}
-
-	maintID := uuid.New().String()
-	maintenances[maintID] = Maintenance{ID: maintID, MachineID: id1, Date: time.Now().AddDate(0, 0, 5).Format("2006-01-02"), Observations: "Regular check-up"}
 
 	stockID1 := uuid.New().String()
 	stock[stockID1] = StockItem{ID: stockID1, Name: "Filter F-10", Quantity: 50, Unit: "piece", Value: 12.50, Location: "Shelf A-3"}
@@ -76,12 +85,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/machines", machinesHandler)
 	mux.HandleFunc("/api/machines/", machineHandler)
-	mux.HandleFunc("/api/maintenances", maintenancesHandler)
-	mux.HandleFunc("/api/maintenances/", maintenanceHandler)
 	mux.HandleFunc("/api/stock", stockHandler)
 	mux.HandleFunc("/api/stock/", stockItemHandler)
 	mux.HandleFunc("/api/operators", operatorsHandler)
 	mux.HandleFunc("/api/operators/", operatorHandler)
+	mux.HandleFunc("/api/maintenance", maintenanceHandler)
+	mux.HandleFunc("/api/maintenance/", maintenanceItemHandler)
 
 	handler := corsMiddleware(mux)
 
@@ -121,18 +130,33 @@ func machinesHandler(w http.ResponseWriter, r *http.Request) {
 func machineHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	id := strings.TrimSuffix(r.URL.Path[len("/api/machines/"):], "/")
-	if _, ok := machines[id]; !ok {
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	machineID := pathParts[2]
+
+	if _, ok := machines[machineID]; !ok {
 		http.Error(w, "Machine not found", http.StatusNotFound)
 		return
 	}
+
+	if len(pathParts) > 3 && pathParts[3] == "sensors" {
+		if len(pathParts) == 4 {
+			machineSensorsHandler(w, r, machineID)
+			return
+		}
+		if len(pathParts) == 5 {
+			sensorID := pathParts[4]
+			machineSensorHandler(w, r, machineID, sensorID)
+			return
+		}
+	}
+
 	switch r.Method {
 	case "GET":
-		getMachine(w, r, id)
+		getMachine(w, r, machineID)
 	case "PUT":
-		updateMachine(w, r, id)
+		updateMachine(w, r, machineID)
 	case "DELETE":
-		deleteMachine(w, r, id)
+		deleteMachine(w, r, machineID)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -160,6 +184,10 @@ func createMachine(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	machine.ID = uuid.New().String()
+	// Assign IDs to new sensors
+	for i := range machine.Sensors {
+		machine.Sensors[i].ID = uuid.New().String()
+	}
 	machines[machine.ID] = machine
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -184,6 +212,10 @@ func updateMachine(w http.ResponseWriter, r *http.Request, id string) {
 			return
 		}
 	}
+
+	existingMachine, _ := machines[id]
+	updatedMachine.Sensors = existingMachine.Sensors
+
 	updatedMachine.ID = id
 	machines[id] = updatedMachine
 	w.Header().Set("Content-Type", "application/json")
@@ -196,12 +228,12 @@ func deleteMachine(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 // Maintenance Handlers
-func maintenancesHandler(w http.ResponseWriter, r *http.Request) {
+func maintenanceHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
 	switch r.Method {
 	case "GET":
-		listMaintenances(w, r)
+		listMaintenance(w, r)
 	case "POST":
 		createMaintenance(w, r)
 	default:
@@ -209,15 +241,19 @@ func maintenancesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func maintenanceHandler(w http.ResponseWriter, r *http.Request) {
+func maintenanceItemHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	id := strings.TrimSuffix(r.URL.Path[len("/api/maintenances/"):], "/")
-	if _, ok := maintenances[id]; !ok {
-		http.Error(w, "Maintenance not found", http.StatusNotFound)
+	id := strings.TrimSuffix(r.URL.Path[len("/api/maintenance/"):], "/")
+	if _, ok := maintenance[id]; !ok {
+		http.Error(w, "Maintenance schedule not found", http.StatusNotFound)
 		return
 	}
 	switch r.Method {
+	case "GET":
+		getMaintenance(w, r, id)
+	case "PUT":
+		updateMaintenance(w, r, id)
 	case "DELETE":
 		deleteMaintenance(w, r, id)
 	default:
@@ -225,76 +261,125 @@ func maintenanceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func listMaintenances(w http.ResponseWriter, r *http.Request) {
+func listMaintenance(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	maintenanceList := make([]Maintenance, 0, len(maintenances))
-	for _, m := range maintenances {
+	maintenanceList := make([]Maintenance, 0, len(maintenance))
+	for _, m := range maintenance {
 		maintenanceList = append(maintenanceList, m)
 	}
 	json.NewEncoder(w).Encode(maintenanceList)
 }
 
 func createMaintenance(w http.ResponseWriter, r *http.Request) {
-	var maintenance Maintenance
-	if err := json.NewDecoder(r.Body).Decode(&maintenance); err != nil {
+	var m Maintenance
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, ok := machines[maintenance.MachineID]; !ok {
-		http.Error(w, "Invalid machine ID", http.StatusBadRequest)
-		return
-	}
-	if _, err := time.Parse("2006-01-02", maintenance.Date); err != nil {
-		http.Error(w, "Invalid date format, please use YYYY-MM-DD", http.StatusBadRequest)
+	if _, ok := machines[m.MachineID]; !ok {
+		http.Error(w, "Machine not found", http.StatusBadRequest)
 		return
 	}
 
-	// Handle stock item usage
-	if maintenance.StockItemID != "" {
-		if maintenance.QuantityUsed <= 0 {
-			http.Error(w, "Quantity to use must be positive", http.StatusBadRequest)
-			return
-		}
-		item, ok := stock[maintenance.StockItemID]
+	// Handle stock
+	for _, usedItem := range m.UsedStock {
+		item, ok := stock[usedItem.StockItemID]
 		if !ok {
-			http.Error(w, "Invalid stock item ID", http.StatusBadRequest)
+			http.Error(w, "Stock item not found: "+usedItem.StockItemID, http.StatusBadRequest)
 			return
 		}
-		if item.Quantity < maintenance.QuantityUsed {
-			http.Error(w, "Not enough quantity in stock", http.StatusBadRequest)
+		if item.Quantity < usedItem.Quantity {
+			http.Error(w, "Not enough stock for item: "+item.Name, http.StatusBadRequest)
 			return
 		}
-		// Decrement stock
-		item.Quantity -= maintenance.QuantityUsed
-		stock[item.ID] = item
+		item.Quantity -= usedItem.Quantity
+		stock[usedItem.StockItemID] = item
 	}
 
-	maintenance.ID = uuid.New().String()
-	maintenances[maintenance.ID] = maintenance
+	m.ID = uuid.New().String()
+	maintenance[m.ID] = m
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(maintenance)
+	json.NewEncoder(w).Encode(m)
+}
+
+func getMaintenance(w http.ResponseWriter, r *http.Request, id string) {
+	m, _ := maintenance[id]
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
+func updateMaintenance(w http.ResponseWriter, r *http.Request, id string) {
+	var updatedMaintenance Maintenance
+	if err := json.NewDecoder(r.Body).Decode(&updatedMaintenance); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, ok := machines[updatedMaintenance.MachineID]; !ok {
+		http.Error(w, "Machine not found", http.StatusBadRequest)
+		return
+	}
+
+	// Restore old stock quantities
+	oldMaintenance, ok := maintenance[id]
+	if !ok {
+		http.Error(w, "Maintenance schedule not found for update", http.StatusNotFound)
+		return
+	}
+	for _, usedItem := range oldMaintenance.UsedStock {
+		item, ok := stock[usedItem.StockItemID]
+		if ok {
+			item.Quantity += usedItem.Quantity
+			stock[usedItem.StockItemID] = item
+		}
+	}
+
+	// Deduct new stock quantities
+	for _, usedItem := range updatedMaintenance.UsedStock {
+		item, ok := stock[usedItem.StockItemID]
+		if !ok {
+			http.Error(w, "Stock item not found: "+usedItem.StockItemID, http.StatusBadRequest)
+			return
+		}
+		if item.Quantity < usedItem.Quantity {
+			// Re-add the previously restored stock before erroring out
+			for _, oldUsedItem := range oldMaintenance.UsedStock {
+				item, ok := stock[oldUsedItem.StockItemID]
+				if ok {
+					item.Quantity -= oldUsedItem.Quantity
+					stock[oldUsedItem.StockItemID] = item
+				}
+			}
+			http.Error(w, "Not enough stock for item: "+item.Name, http.StatusBadRequest)
+			return
+		}
+		item.Quantity -= usedItem.Quantity
+		stock[usedItem.StockItemID] = item
+	}
+
+	updatedMaintenance.ID = id
+	maintenance[id] = updatedMaintenance
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updatedMaintenance)
 }
 
 func deleteMaintenance(w http.ResponseWriter, r *http.Request, id string) {
-	// Find the maintenance before deleting to get stock info
-	maint, ok := maintenances[id]
+	m, ok := maintenance[id]
 	if !ok {
-		// This case should ideally not be hit due to the check in maintenanceHandler
-		http.Error(w, "Maintenance not found", http.StatusNotFound)
+		http.Error(w, "Maintenance schedule not found", http.StatusNotFound)
 		return
 	}
 
-	// Replenish stock if item was used
-	if maint.StockItemID != "" && maint.QuantityUsed > 0 {
-		item, ok := stock[maint.StockItemID]
+	// Restore stock
+	for _, usedItem := range m.UsedStock {
+		item, ok := stock[usedItem.StockItemID]
 		if ok {
-			item.Quantity += maint.QuantityUsed
-			stock[item.ID] = item
+			item.Quantity += usedItem.Quantity
+			stock[usedItem.StockItemID] = item
 		}
 	}
 
-	delete(maintenances, id)
+	delete(maintenance, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -460,5 +545,70 @@ func deleteOperator(w http.ResponseWriter, r *http.Request, id string) {
 		}
 	}
 	delete(operators, id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func machineSensorsHandler(w http.ResponseWriter, r *http.Request, machineID string) {
+	switch r.Method {
+	case "GET":
+		listMachineSensors(w, r, machineID)
+	case "POST":
+		addSensorToMachine(w, r, machineID)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func machineSensorHandler(w http.ResponseWriter, r *http.Request, machineID, sensorID string) {
+	switch r.Method {
+	case "DELETE":
+		removeSensorFromMachine(w, r, machineID, sensorID)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func listMachineSensors(w http.ResponseWriter, r *http.Request, machineID string) {
+	machine, _ := machines[machineID]
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(machine.Sensors)
+}
+
+func addSensorToMachine(w http.ResponseWriter, r *http.Request, machineID string) {
+	var sensor Sensor
+	if err := json.NewDecoder(r.Body).Decode(&sensor); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	sensor.ID = uuid.New().String()
+
+	machine := machines[machineID]
+	machine.Sensors = append(machine.Sensors, sensor)
+	machines[machineID] = machine
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(sensor)
+}
+
+func removeSensorFromMachine(w http.ResponseWriter, r *http.Request, machineID, sensorID string) {
+	machine := machines[machineID]
+	var found bool
+	var updatedSensors []Sensor
+	for _, s := range machine.Sensors {
+		if s.ID == sensorID {
+			found = true
+		} else {
+			updatedSensors = append(updatedSensors, s)
+		}
+	}
+
+	if !found {
+		http.Error(w, "Sensor not found on this machine", http.StatusNotFound)
+		return
+	}
+
+	machine.Sensors = updatedSensors
+	machines[machineID] = machine
 	w.WriteHeader(http.StatusNoContent)
 }

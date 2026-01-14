@@ -1,36 +1,8 @@
+import { Machine, StockItem, Operator, Sensor, Maintenance } from './types';
+
 const API_URL = 'http://localhost:8080/api';
 
-export interface Machine {
-    id: string;
-    name: string;
-    status: string;
-    operatorId?: string;
-}
-
-export interface Maintenance {
-    id: string;
-    machineId: string;
-    date: string; // YYYY-MM-DD
-    observations: string;
-    stockItemId?: string;
-    quantityUsed?: number;
-}
-
-export interface StockItem {
-    id: string;
-    name: string;
-    quantity: number;
-    unit: string;
-    value: number;
-    location: string;
-}
-
-export interface Operator {
-    id: string;
-    name: string;
-}
-
-// Machine API calls
+// Machine API
 export const getMachines = async (): Promise<Machine[]> => {
     const response = await fetch(`${API_URL}/machines`);
     if (!response.ok) {
@@ -53,17 +25,14 @@ export const createMachine = async (machine: Omit<Machine, 'id'>): Promise<Machi
     return response.json();
 };
 
-export const updateMachine = async (machine: Machine): Promise<Machine> => {
-    const response = await fetch(`${API_URL}/machines/${machine.id}`, {
+export const updateMachine = async (id: string, machine: Omit<Machine, 'id'>): Promise<Machine> => {
+    const response = await fetch(`${API_URL}/machines/${id}`, {
         method: 'PUT',
         headers: {
             'Content-Type': 'application/json',
         },
         body: JSON.stringify(machine),
     });
-    if (!response.ok) {
-        throw new Error('Failed to update machine');
-    }
     return response.json();
 };
 
@@ -76,17 +45,17 @@ export const deleteMachine = async (id: string): Promise<void> => {
     }
 };
 
-// Maintenance API calls
-export const getMaintenances = async (): Promise<Maintenance[]> => {
-    const response = await fetch(`${API_URL}/maintenances`);
+// Maintenance API
+export const getMaintenance = async (): Promise<Maintenance[]> => {
+    const response = await fetch(`${API_URL}/maintenance`);
     if (!response.ok) {
-        throw new Error('Failed to fetch maintenances');
+        throw new Error('Failed to fetch maintenance schedules');
     }
     return response.json();
-}
+};
 
 export const createMaintenance = async (maintenance: Omit<Maintenance, 'id'>): Promise<Maintenance> => {
-    const response = await fetch(`${API_URL}/maintenances`, {
+    const response = await fetch(`${API_URL}/maintenance`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -94,19 +63,34 @@ export const createMaintenance = async (maintenance: Omit<Maintenance, 'id'>): P
         body: JSON.stringify(maintenance),
     });
     if (!response.ok) {
-        throw new Error('Failed to create maintenance');
+        throw new Error('Failed to create maintenance schedule');
     }
     return response.json();
-}
+};
+
+export const updateMaintenance = async (id: string, maintenance: Maintenance): Promise<Maintenance> => {
+    const response = await fetch(`${API_URL}/maintenance/${id}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(maintenance),
+    });
+    if (!response.ok) {
+        throw new Error('Failed to update maintenance schedule');
+    }
+    return response.json();
+};
 
 export const deleteMaintenance = async (id: string): Promise<void> => {
-    const response = await fetch(`${API_URL}/maintenances/${id}`, {
+    const response = await fetch(`${API_URL}/maintenance/${id}`, {
         method: 'DELETE',
     });
     if (!response.ok) {
-        throw new Error('Failed to delete maintenance');
+        throw new Error('Failed to delete maintenance schedule');
     }
-}
+};
+
 
 // Stock API calls
 export const getStockItems = async (): Promise<StockItem[]> => {
@@ -191,11 +175,31 @@ export const updateOperator = async (id: string, operator: Omit<Operator, 'id'>)
     return response.json();
 }
 
-export const deleteOperator = async (id: string): Promise<void> => {
-    const response = await fetch(`${API_URL}/operators/${id}`, {
+export const deleteOperator = (id: string) => {
+    return fetch(`${API_URL}/operators/${id}`, {
+        method: 'DELETE',
+    });
+};
+
+export const addSensorToMachine = async (machineId: string, sensor: Omit<Sensor, 'id'>): Promise<Sensor> => {
+    const response = await fetch(`${API_URL}/machines/${machineId}/sensors`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(sensor),
+    });
+    if (!response.ok) {
+        throw new Error('Failed to add sensor to machine');
+    }
+    return response.json();
+};
+
+export const removeSensorFromMachine = async (machineId: string, sensorId: string): Promise<void> => {
+    const response = await fetch(`${API_URL}/machines/${machineId}/sensors/${sensorId}`, {
         method: 'DELETE',
     });
     if (!response.ok) {
-        throw new Error('Failed to delete operator');
+        throw new Error('Failed to remove sensor from machine');
     }
-}
+};

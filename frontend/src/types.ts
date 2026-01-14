@@ -3,15 +3,7 @@ export interface Machine {
     name: string;
     status: string;
     operatorId?: string;
-}
-
-export interface Maintenance {
-    id: string;
-    machineId: string;
-    date: string;
-    observations: string;
-    stockItemId: string;
-    quantityUsed: number;
+    sensors?: Sensor[];
 }
 
 export interface StockItem {
@@ -26,4 +18,23 @@ export interface StockItem {
 export interface Operator {
     id: string;
     name: string;
+}
+
+export interface Sensor {
+    id: string;
+    name: string;
+    type: string;
+}
+
+export interface Maintenance {
+    id: string;
+    machineId: string;
+    date: string;
+    description: string;
+    usedStock: UsedStockItem[];
+}
+
+export interface UsedStockItem {
+    stockItemId: string;
+    quantity: number;
 }

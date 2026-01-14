@@ -1,18 +1,17 @@
-import { useState, useEffect, FormEvent } from 'react';
-import { getMachines, createMachine, updateMachine, deleteMachine, getOperators, Machine, Operator } from '../api';
-import ScheduleMaintenanceModal from '../components/ScheduleMaintenanceModal';
+import { useState, useEffect } from 'react';
+import { getMachines, createMachine, updateMachine, deleteMachine, getOperators, removeSensorFromMachine } from '../api';
+import { Machine, Operator, Sensor } from '../types';
 
-function Dashboard() {
+const Dashboard = () => {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [name, setName] = useState('');
-  const [status, setStatus] = useState('active');
-  const [operatorId, setOperatorId] = useState<string>('');
+  const [selectedOperator, setSelectedOperator] = useState<string>('');
   const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
+  const [formSensors, setFormSensors] = useState<Sensor[]>([]);
+  const [newSensorName, setNewSensorName] = useState('');
+  const [newSensorType, setNewSensorType] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
-
 
   useEffect(() => {
     fetchMachines();
@@ -23,45 +22,34 @@ function Dashboard() {
     try {
       const data = await getMachines();
       setMachines(data);
-      setError(null);
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
       setError("Failed to fetch machines. Is the backend server running?");
     }
   };
 
   const fetchOperators = async () => {
-    try {
-      const data = await getOperators();
-      setOperators(data);
-    } catch (error) {
-      console.error(error);
-      // Handle error fetching operators
-    }
+    const data = await getOperators();
+    setOperators(data);
   };
 
-  const handleSubmit = async (e: FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name) {
-      setError("Machine name is required.");
-      return;
-    }
+    const machineData = {
+      name,
+      operatorId: selectedOperator,
+      sensors: formSensors
+    };
 
     try {
       if (editingMachine) {
-        const updated = await updateMachine({ ...editingMachine, name, status, operatorId });
-        setMachines(machines.map(m => m.id === updated.id ? updated : m));
-        setEditingMachine(null);
+        const updatedMachine = await updateMachine(editingMachine.id, machineData);
+        setMachines(machines.map((m) => (m.id === editingMachine.id ? updatedMachine : m)));
       } else {
-        const newData = await createMachine({ name, status, operatorId });
-        setMachines([...machines, newData]);
+        const newMachine = await createMachine(machineData);
+        setMachines([...machines, newMachine]);
       }
-      setName('');
-      setStatus('active');
-      setOperatorId('');
-      setError(null);
-    } catch (error) {
-      console.error(error);
+      resetForm();
+    } catch (err) {
       setError("Failed to save machine. Please try again.");
     }
   };
@@ -69,160 +57,157 @@ function Dashboard() {
   const handleEdit = (machine: Machine) => {
     setEditingMachine(machine);
     setName(machine.name);
-    setStatus(machine.status);
-    setOperatorId(machine.operatorId || '');
+    setSelectedOperator(machine.operatorId || '');
+    setFormSensors(machine.sensors || []);
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this machine?')) {
-      try {
-        await deleteMachine(id);
-        setMachines(machines.filter(m => m.id !== id));
-        setError(null);
-      } catch (error) {
-        console.error(error);
-        setError("Failed to delete machine. Please try again.");
-      }
+    try {
+      await deleteMachine(id);
+      fetchMachines();
+    } catch (err) {
+      setError("Failed to delete machine. Please try again.");
     }
   };
 
-  const cancelEdit = () => {
-    setEditingMachine(null);
+  const resetForm = () => {
     setName('');
-    setStatus('active');
-    setOperatorId('');
-  }
+    setSelectedOperator('');
+    setEditingMachine(null);
+    setFormSensors([]);
+    setNewSensorName('');
+    setNewSensorType('');
+  };
 
-  const handleOpenScheduleModal = (machine: Machine) => {
-    setSelectedMachine(machine);
-    setIsModalOpen(true);
-  }
+  const handleAddSensor = () => {
+    if (newSensorName && newSensorType) {
+      const newSensor: Sensor = { id: '', name: newSensorName, type: newSensorType };
+      setFormSensors([...formSensors, newSensor]);
+      setNewSensorName('');
+      setNewSensorType('');
+    }
+  };
 
-  const getOperatorName = (operatorId: string) => {
-    const operator = operators.find(op => op.id === operatorId);
-    return operator ? operator.name : 'Unassigned';
+  const handleRemoveFormSensor = (index: number) => {
+    setFormSensors(formSensors.filter((_, i) => i !== index));
+  };
+
+  const handleRemoveSensorFromMachine = async (machineId: string, sensorId: string) => {
+    try {
+      await removeSensorFromMachine(machineId, sensorId);
+      fetchMachines();
+    } catch (err) {
+      setError("Failed to remove sensor. Please try again.");
+    }
   };
 
   return (
-    <>
+    <div className="p-4">
       <h1 className="text-3xl font-bold text-gray-800 mb-4">Machines Dashboard</h1>
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+          <span className="block sm:inline">{error}</span>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         <div className="md:col-span-1">
           <div className="bg-white p-6 rounded-lg shadow">
             <h2 className="text-xl font-bold mb-4">{editingMachine ? 'Edit Machine' : 'Add New Machine'}</h2>
             <form onSubmit={handleSubmit}>
               <div className="mb-4">
-                <label htmlFor="name" className="block text-sm font-medium text-gray-700">Name</label>
+                <label className="block text-gray-700">Name</label>
                 <input
                   type="text"
-                  id="name"
                   value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full p-2 border rounded"
                   placeholder="e.g., CNC-002"
                 />
               </div>
               <div className="mb-4">
-                <label htmlFor="status" className="block text-sm font-medium text-gray-700">Status</label>
+                <label className="block text-gray-700">Operator</label>
                 <select
-                  id="status"
-                  value={status}
-                  onChange={e => setStatus(e.target.value)}
-                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                  value={selectedOperator}
+                  onChange={(e) => setSelectedOperator(e.target.value)}
+                  className="w-full p-2 border rounded"
                 >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
-                  <option value="maintenance">Maintenance</option>
-                </select>
-              </div>
-              <div className="mb-4">
-                <label htmlFor="operator" className="block text-sm font-medium text-gray-700">Operator</label>
-                <select
-                  id="operator"
-                  value={operatorId}
-                  onChange={e => setOperatorId(e.target.value)}
-                  className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                >
-                  <option value="">Unassigned</option>
-                  {operators.map(operator => (
-                    <option key={operator.id} value={operator.id}>{operator.name}</option>
+                  <option value="">No operator</option>
+                  {operators.map((o) => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
                   ))}
                 </select>
               </div>
-              <div className="flex items-center justify-between">
-                <button type="submit" className="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                  {editingMachine ? 'Update Machine' : 'Add Machine'}
-                </button>
-                {editingMachine && (
-                  <button type="button" onClick={cancelEdit} className="text-sm text-gray-600 hover:text-gray-900">
-                    Cancel
-                  </button>
-                )}
+
+              <div className="mb-4">
+                <label className="block text-gray-700">Sensors</label>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    placeholder="Sensor Name"
+                    value={newSensorName}
+                    onChange={(e) => setNewSensorName(e.target.value)}
+                    className="w-full p-2 border rounded"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Sensor Type"
+                    value={newSensorType}
+                    onChange={(e) => setNewSensorType(e.target.value)}
+                    className="w-full p-2 border rounded"
+                  />
+                  <button type="button" onClick={handleAddSensor} className="bg-blue-500 text-white p-2 rounded">Add</button>
+                </div>
+                <ul className="mt-2">
+                  {formSensors.map((s, index) => (
+                    <li key={index} className="flex justify-between items-center p-1 bg-gray-100 rounded">
+                      <span>{s.name} ({s.type})</span>
+                      <button type="button" onClick={() => handleRemoveFormSensor(index)} className="text-red-500">Remove</button>
+                    </li>
+                  ))}
+                </ul>
               </div>
+
+              <button type="submit" className="bg-blue-500 text-white p-2 rounded">
+                {editingMachine ? 'Update Machine' : 'Add Machine'}
+              </button>
+              {editingMachine && (
+                <button type="button" onClick={resetForm} className="ml-2 text-gray-500">
+                  Cancel
+                </button>
+              )}
             </form>
           </div>
         </div>
-
         <div className="md:col-span-2">
-          {error && (
-            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
-              <span className="block sm:inline">{error}</span>
-            </div>
-          )}
-          <div className="bg-white shadow overflow-hidden rounded-lg">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Operator</th>
-                  <th scope="col" className="relative px-6 py-3">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {machines.length > 0 ? machines.map(machine => (
-                  <tr key={machine.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{machine.name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${machine.status === 'active' ? 'bg-green-100 text-green-800' :
-                          machine.status === 'inactive' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
-                        }`}>
-                        {machine.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{getOperatorName(machine.operatorId || '')}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <button onClick={() => handleOpenScheduleModal(machine)} className="text-blue-600 hover:text-blue-900 mr-4">Schedule</button>
-                      <button onClick={() => handleEdit(machine)} className="text-indigo-600 hover:text-indigo-900 mr-4">Edit</button>
-                      <button onClick={() => handleDelete(machine.id)} className="text-red-600 hover:text-red-900">Delete</button>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td colSpan={4} className="text-center py-10 text-gray-500">
-                      No machines found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          <ul className="space-y-4">
+            {machines.map((m) => (
+              <li key={m.id} className="p-4 border rounded shadow-sm">
+                <h3 className="text-xl font-bold">{m.name}</h3>
+                <p>Operator: {operators.find(o => o.id === m.operatorId)?.name || 'None'}</p>
+                <div>
+                  <h4 className="font-bold mt-2">Sensors:</h4>
+                  {m.sensors && m.sensors.length > 0 ? (
+                    <ul className="list-disc ml-5">
+                      {m.sensors.map((s: Sensor) => (
+                        <li key={s.id} className="flex justify-between items-center">
+                          {s.name} ({s.type})
+                          <button onClick={() => handleRemoveSensorFromMachine(m.id, s.id)} className="text-red-500 ml-4">Remove</button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>No sensors attached.</p>}
+                </div>
+                <div className="mt-4 space-x-2">
+                  <button onClick={() => handleEdit(m)} className="bg-yellow-500 text-white p-2 rounded">Edit</button>
+                  <button onClick={() => handleDelete(m.id)} className="bg-red-500 text-white p-2 rounded">Delete</button>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
-      {isModalOpen && selectedMachine && (
-        <ScheduleMaintenanceModal
-          machine={selectedMachine}
-          onClose={() => setIsModalOpen(false)}
-          onSuccess={() => {
-            setIsModalOpen(false);
-            // Optionally, you can show a success message
-          }}
-        />
-      )}
-    </>
+    </div>
   );
-}
+};
 
 export default Dashboard;
