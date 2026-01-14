@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import Calendar from './pages/Calendar';
 import Stock from './pages/Stock';
+import Operators from './pages/Operators';
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/stock" element={<Stock />} />
+            <Route path="/operators" element={<Operators />} />
           </Routes>
         </main>
       </div>

@@ -13,9 +13,10 @@ import (
 
 // Machine represents an industrial machine.
 type Machine struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	OperatorID string `json:"operatorId,omitempty"`
 }
 
 // Maintenance represents a scheduled maintenance for a machine.
@@ -38,17 +39,29 @@ type StockItem struct {
 	Location string  `json:"location"`
 }
 
+// Operator represents a machine operator.
+type Operator struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 var (
 	machines     = make(map[string]Machine)
 	maintenances = make(map[string]Maintenance)
 	stock        = make(map[string]StockItem)
+	operators    = make(map[string]Operator)
 	mutex        = &sync.Mutex{}
 )
 
 func main() {
 	// Seed some data
+	opID1 := uuid.New().String()
+	operators[opID1] = Operator{ID: opID1, Name: "John Doe"}
+	opID2 := uuid.New().String()
+	operators[opID2] = Operator{ID: opID2, Name: "Jane Smith"}
+
 	id1 := uuid.New().String()
-	machines[id1] = Machine{ID: id1, Name: "CNC-001", Status: "active"}
+	machines[id1] = Machine{ID: id1, Name: "CNC-001", Status: "active", OperatorID: opID1}
 	id2 := uuid.New().String()
 	machines[id2] = Machine{ID: id2, Name: "Welder-005", Status: "inactive"}
 
@@ -60,7 +73,6 @@ func main() {
 	stockID2 := uuid.New().String()
 	stock[stockID2] = StockItem{ID: stockID2, Name: "Coolant C-5L", Quantity: 20, Unit: "liter", Value: 25.00, Location: "Cabinet B-1"}
 
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/machines", machinesHandler)
 	mux.HandleFunc("/api/machines/", machineHandler)
@@ -68,9 +80,10 @@ func main() {
 	mux.HandleFunc("/api/maintenances/", maintenanceHandler)
 	mux.HandleFunc("/api/stock", stockHandler)
 	mux.HandleFunc("/api/stock/", stockItemHandler)
+	mux.HandleFunc("/api/operators", operatorsHandler)
+	mux.HandleFunc("/api/operators/", operatorHandler)
 
-
-handler := corsMiddleware(mux)
+	handler := corsMiddleware(mux)
 
 	log.Println("Server starting on port 8080...")
 	if err := http.ListenAndServe(":8080", handler); err != nil {
@@ -140,6 +153,12 @@ func createMachine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if machine.OperatorID != "" {
+		if _, ok := operators[machine.OperatorID]; !ok {
+			http.Error(w, "Invalid operator ID", http.StatusBadRequest)
+			return
+		}
+	}
 	machine.ID = uuid.New().String()
 	machines[machine.ID] = machine
 	w.Header().Set("Content-Type", "application/json")
@@ -158,6 +177,12 @@ func updateMachine(w http.ResponseWriter, r *http.Request, id string) {
 	if err := json.NewDecoder(r.Body).Decode(&updatedMachine); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if updatedMachine.OperatorID != "" {
+		if _, ok := operators[updatedMachine.OperatorID]; !ok {
+			http.Error(w, "Invalid operator ID", http.StatusBadRequest)
+			return
+		}
 	}
 	updatedMachine.ID = id
 	machines[id] = updatedMachine
@@ -275,79 +300,165 @@ func deleteMaintenance(w http.ResponseWriter, r *http.Request, id string) {
 
 // Stock Handlers
 func stockHandler(w http.ResponseWriter, r *http.Request) {
-    mutex.Lock()
-    defer mutex.Unlock()
-    switch r.Method {
-    case "GET":
-        listStockItems(w, r)
-    case "POST":
-        createStockItem(w, r)
-    default:
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-    }
+	mutex.Lock()
+	defer mutex.Unlock()
+	switch r.Method {
+	case "GET":
+		listStockItems(w, r)
+	case "POST":
+		createStockItem(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func stockItemHandler(w http.ResponseWriter, r *http.Request) {
-    mutex.Lock()
-    defer mutex.Unlock()
-    id := strings.TrimSuffix(r.URL.Path[len("/api/stock/"):], "/")
-    if _, ok := stock[id]; !ok {
-        http.Error(w, "Stock item not found", http.StatusNotFound)
-        return
-    }
-    switch r.Method {
-    case "GET":
-        getStockItem(w, r, id)
-    case "PUT":
-        updateStockItem(w, r, id)
-    case "DELETE":
-        deleteStockItem(w, r, id)
-    default:
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-    }
+	mutex.Lock()
+	defer mutex.Unlock()
+	id := strings.TrimSuffix(r.URL.Path[len("/api/stock/"):], "/")
+	if _, ok := stock[id]; !ok {
+		http.Error(w, "Stock item not found", http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case "GET":
+		getStockItem(w, r, id)
+	case "PUT":
+		updateStockItem(w, r, id)
+	case "DELETE":
+		deleteStockItem(w, r, id)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func listStockItems(w http.ResponseWriter, r *http.Request) {
-    w.Header().Set("Content-Type", "application/json")
-    stockList := make([]StockItem, 0, len(stock))
-    for _, item := range stock {
-        stockList = append(stockList, item)
-    }
-    json.NewEncoder(w).Encode(stockList)
+	w.Header().Set("Content-Type", "application/json")
+	stockList := make([]StockItem, 0, len(stock))
+	for _, item := range stock {
+		stockList = append(stockList, item)
+	}
+	json.NewEncoder(w).Encode(stockList)
 }
 
 func createStockItem(w http.ResponseWriter, r *http.Request) {
-    var item StockItem
-    if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
-        http.Error(w, err.Error(), http.StatusBadRequest)
-        return
-    }
-    item.ID = uuid.New().String()
-    stock[item.ID] = item
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusCreated)
-    json.NewEncoder(w).Encode(item)
+	var item StockItem
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	item.ID = uuid.New().String()
+	stock[item.ID] = item
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(item)
 }
 
 func getStockItem(w http.ResponseWriter, r *http.Request, id string) {
-    item, _ := stock[id]
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(item)
+	item, _ := stock[id]
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
 }
 
 func updateStockItem(w http.ResponseWriter, r *http.Request, id string) {
-    var updatedItem StockItem
-    if err := json.NewDecoder(r.Body).Decode(&updatedItem); err != nil {
-        http.Error(w, err.Error(), http.StatusBadRequest)
-        return
-    }
-    updatedItem.ID = id
-    stock[id] = updatedItem
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(updatedItem)
+	var updatedItem StockItem
+	if err := json.NewDecoder(r.Body).Decode(&updatedItem); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	updatedItem.ID = id
+	stock[id] = updatedItem
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updatedItem)
 }
 
 func deleteStockItem(w http.ResponseWriter, r *http.Request, id string) {
-    delete(stock, id)
-    w.WriteHeader(http.StatusNoContent)
+	delete(stock, id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Operator Handlers
+func operatorsHandler(w http.ResponseWriter, r *http.Request) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	switch r.Method {
+	case "GET":
+		listOperators(w, r)
+	case "POST":
+		createOperator(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func operatorHandler(w http.ResponseWriter, r *http.Request) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	id := strings.TrimSuffix(r.URL.Path[len("/api/operators/"):], "/")
+	if _, ok := operators[id]; !ok {
+		http.Error(w, "Operator not found", http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case "GET":
+		getOperator(w, r, id)
+	case "PUT":
+		updateOperator(w, r, id)
+	case "DELETE":
+		deleteOperator(w, r, id)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func listOperators(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	operatorList := make([]Operator, 0, len(operators))
+	for _, operator := range operators {
+		operatorList = append(operatorList, operator)
+	}
+	json.NewEncoder(w).Encode(operatorList)
+}
+
+func createOperator(w http.ResponseWriter, r *http.Request) {
+	var operator Operator
+	if err := json.NewDecoder(r.Body).Decode(&operator); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	operator.ID = uuid.New().String()
+	operators[operator.ID] = operator
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(operator)
+}
+
+func getOperator(w http.ResponseWriter, r *http.Request, id string) {
+	operator, _ := operators[id]
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(operator)
+}
+
+func updateOperator(w http.ResponseWriter, r *http.Request, id string) {
+	var updatedOperator Operator
+	if err := json.NewDecoder(r.Body).Decode(&updatedOperator); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	updatedOperator.ID = id
+	operators[id] = updatedOperator
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updatedOperator)
+}
+
+func deleteOperator(w http.ResponseWriter, r *http.Request, id string) {
+	// Optional: Unassign operator from any machines before deleting
+	for k, v := range machines {
+		if v.OperatorID == id {
+			v.OperatorID = ""
+			machines[k] = v
+		}
+	}
+	delete(operators, id)
+	w.WriteHeader(http.StatusNoContent)
 }

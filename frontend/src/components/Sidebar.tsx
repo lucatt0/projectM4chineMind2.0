@@ -4,6 +4,7 @@ const navigation = [
     { name: 'Machines', href: '/', icon: 'M' },
     { name: 'Calendar', href: '/calendar', icon: 'C' },
     { name: 'Stock', href: '/stock', icon: 'S' },
+    { name: 'Operators', href: '/operators', icon: 'O' },
 ]
 
 function Sidebar() {
@@ -19,10 +20,9 @@ function Sidebar() {
                         to={item.href}
                         end={item.href === '/'} // Important for matching the root URL exactly
                         className={({ isActive }) =>
-                            `flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                                isActive
-                                    ? 'bg-gray-900 text-white'
-                                    : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                            `flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
+                                ? 'bg-gray-900 text-white'
+                                : 'text-gray-300 hover:bg-gray-700 hover:text-white'
                             }`
                         }
                     >
