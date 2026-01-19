@@ -1,25 +1,36 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // Machine represents an industrial machine.
 type Machine struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Status     string   `json:"status"`
-	OperatorID string   `json:"operatorId,omitempty"`
-	Sensors    []Sensor `json:"sensors"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Model        string   `json:"model"`
+	Manufacturer string   `json:"manufacturer"`
+	Year         int      `json:"year"`
+	Status       string   `json:"status"`
+	OperatorID   string   `json:"operatorId,omitempty"`
+	Sensors      []Sensor `json:"sensors"`
 }
 
-// StockItem represents an item in the stock.
+type Sensor struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"` // e.g., "temperature", "pressure", "vibration"
+}
+
 type StockItem struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
@@ -29,17 +40,9 @@ type StockItem struct {
 	Location string  `json:"location"`
 }
 
-// Operator represents a machine operator.
 type Operator struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-}
-
-// Sensor represents a sensor that can be attached to a machine.
-type Sensor struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"` // e.g., "temperature", "pressure", "vibration"
 }
 
 // Maintenance represents a maintenance schedule for a machine.
@@ -48,39 +51,30 @@ type Maintenance struct {
 	MachineID   string          `json:"machineId"`
 	Date        string          `json:"date"`
 	Description string          `json:"description"`
+	Status      string          `json:"status"`
 	UsedStock   []UsedStockItem `json:"usedStock"`
 }
 
 // UsedStockItem represents a stock item used in a maintenance.
 type UsedStockItem struct {
-	StockItemID string `json:"stockItemId"`
-	Quantity    int    `json:"quantity"`
+	StockID  string `json:"stockId"`
+	Quantity int    `json:"quantity"`
 }
 
 var (
-	machines    = make(map[string]Machine)
-	stock       = make(map[string]StockItem)
-	operators   = make(map[string]Operator)
-	maintenance = make(map[string]Maintenance)
-	mutex       = &sync.Mutex{}
+	db    *sql.DB
+	mutex = &sync.Mutex{}
 )
 
 func main() {
-	// Seed some data
-	opID1 := uuid.New().String()
-	operators[opID1] = Operator{ID: opID1, Name: "John Doe"}
-	opID2 := uuid.New().String()
-	operators[opID2] = Operator{ID: opID2, Name: "Jane Smith"}
+	var err error
+	db, err = sql.Open("sqlite3", "./m4chinemind.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
 
-	id1 := uuid.New().String()
-	machines[id1] = Machine{ID: id1, Name: "CNC-001", Status: "active", OperatorID: opID1, Sensors: []Sensor{{ID: uuid.New().String(), Name: "Temp-01", Type: "temperature"}}}
-	id2 := uuid.New().String()
-	machines[id2] = Machine{ID: id2, Name: "Welder-005", Status: "inactive"}
-
-	stockID1 := uuid.New().String()
-	stock[stockID1] = StockItem{ID: stockID1, Name: "Filter F-10", Quantity: 50, Unit: "piece", Value: 12.50, Location: "Shelf A-3"}
-	stockID2 := uuid.New().String()
-	stock[stockID2] = StockItem{ID: stockID2, Name: "Coolant C-5L", Quantity: 20, Unit: "liter", Value: 25.00, Location: "Cabinet B-1"}
+	createTables()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/machines", machinesHandler)
@@ -89,14 +83,95 @@ func main() {
 	mux.HandleFunc("/api/stock/", stockItemHandler)
 	mux.HandleFunc("/api/operators", operatorsHandler)
 	mux.HandleFunc("/api/operators/", operatorHandler)
-	mux.HandleFunc("/api/maintenance", maintenanceHandler)
-	mux.HandleFunc("/api/maintenance/", maintenanceItemHandler)
+	mux.HandleFunc("/api/maintenance", maintenanceRootHandler)
+	mux.HandleFunc("/api/maintenance/", maintenanceIdHandler)
+	mux.HandleFunc("/api/reports/", reportsHandler)
 
 	handler := corsMiddleware(mux)
 
 	log.Println("Server starting on port 8080...")
 	if err := http.ListenAndServe(":8080", handler); err != nil {
 		log.Fatalf("Could not start server: %s\n", err)
+	}
+}
+
+func createTables() {
+	createOperatorsTable := `
+	CREATE TABLE IF NOT EXISTS operators (
+		id TEXT PRIMARY KEY,
+		name TEXT
+	);`
+	_, err := db.Exec(createOperatorsTable)
+	if err != nil {
+		log.Fatalf("Failed to create operators table: %v", err)
+	}
+
+	createMachinesTable := `
+	CREATE TABLE IF NOT EXISTS machines (
+		id TEXT PRIMARY KEY,
+		name TEXT,
+		status TEXT,
+		operatorId TEXT,
+		FOREIGN KEY(operatorId) REFERENCES operators(id)
+	);`
+	_, err = db.Exec(createMachinesTable)
+	if err != nil {
+		log.Fatalf("Failed to create machines table: %v", err)
+	}
+
+	createSensorsTable := `
+	CREATE TABLE IF NOT EXISTS sensors (
+		id TEXT PRIMARY KEY,
+		name TEXT,
+		type TEXT,
+		machineId TEXT,
+		FOREIGN KEY(machineId) REFERENCES machines(id)
+	);`
+	_, err = db.Exec(createSensorsTable)
+	if err != nil {
+		log.Fatalf("Failed to create sensors table: %v", err)
+	}
+
+	createStockTable := `
+	CREATE TABLE IF NOT EXISTS stock (
+		id TEXT PRIMARY KEY,
+		name TEXT,
+		quantity INTEGER,
+		unit TEXT,
+		value REAL,
+		location TEXT
+	);`
+	_, err = db.Exec(createStockTable)
+	if err != nil {
+		log.Fatalf("Failed to create stock table: %v", err)
+	}
+
+	createMaintenanceTable := `
+	CREATE TABLE IF NOT EXISTS maintenance (
+		id TEXT PRIMARY KEY,
+		machineId TEXT,
+		date TEXT,
+		description TEXT,
+		status TEXT,
+		FOREIGN KEY(machineId) REFERENCES machines(id)
+	);`
+	_, err = db.Exec(createMaintenanceTable)
+	if err != nil {
+		log.Fatalf("Failed to create maintenance table: %v", err)
+	}
+
+	createMaintenanceStockTable := `
+	CREATE TABLE IF NOT EXISTS maintenance_stock (
+		maintenanceId TEXT,
+		stockId TEXT,
+		quantity INTEGER,
+		PRIMARY KEY(maintenanceId, stockId),
+		FOREIGN KEY(maintenanceId) REFERENCES maintenance(id),
+		FOREIGN KEY(stockId) REFERENCES stock(id)
+	);`
+	_, err = db.Exec(createMaintenanceStockTable)
+	if err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -130,339 +205,44 @@ func machinesHandler(w http.ResponseWriter, r *http.Request) {
 func machineHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	machineID := pathParts[2]
+	id := strings.TrimPrefix(r.URL.Path, "/api/machines/")
+	id = strings.TrimSuffix(id, "/sensors") // Handle /sensors endpoint
 
-	if _, ok := machines[machineID]; !ok {
+	// Check if machine exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM machines WHERE id = ?)", id).Scan(&exists)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !exists {
 		http.Error(w, "Machine not found", http.StatusNotFound)
 		return
 	}
 
-	if len(pathParts) > 3 && pathParts[3] == "sensors" {
-		if len(pathParts) == 4 {
-			machineSensorsHandler(w, r, machineID)
-			return
+	if strings.HasSuffix(r.URL.Path, "/sensors") {
+		switch r.Method {
+		case "GET":
+			getMachineSensors(w, r, id)
+		case "POST":
+			createMachineSensor(w, r, id)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-		if len(pathParts) == 5 {
-			sensorID := pathParts[4]
-			machineSensorHandler(w, r, machineID, sensorID)
-			return
-		}
+		return
 	}
 
 	switch r.Method {
 	case "GET":
-		getMachine(w, r, machineID)
+		getMachine(w, r, id)
 	case "PUT":
-		updateMachine(w, r, machineID)
+		updateMachine(w, r, id)
 	case "DELETE":
-		deleteMachine(w, r, machineID)
+		deleteMachine(w, r, id)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
-
-func listMachines(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	machineList := make([]Machine, 0, len(machines))
-	for _, machine := range machines {
-		machineList = append(machineList, machine)
-	}
-	json.NewEncoder(w).Encode(machineList)
-}
-
-func createMachine(w http.ResponseWriter, r *http.Request) {
-	var machine Machine
-	if err := json.NewDecoder(r.Body).Decode(&machine); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if machine.OperatorID != "" {
-		if _, ok := operators[machine.OperatorID]; !ok {
-			http.Error(w, "Invalid operator ID", http.StatusBadRequest)
-			return
-		}
-	}
-	machine.ID = uuid.New().String()
-	// Assign IDs to new sensors
-	for i := range machine.Sensors {
-		machine.Sensors[i].ID = uuid.New().String()
-	}
-	machines[machine.ID] = machine
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(machine)
-}
-
-func getMachine(w http.ResponseWriter, r *http.Request, id string) {
-	machine, _ := machines[id]
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(machine)
-}
-
-func updateMachine(w http.ResponseWriter, r *http.Request, id string) {
-	var updatedMachine Machine
-	if err := json.NewDecoder(r.Body).Decode(&updatedMachine); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if updatedMachine.OperatorID != "" {
-		if _, ok := operators[updatedMachine.OperatorID]; !ok {
-			http.Error(w, "Invalid operator ID", http.StatusBadRequest)
-			return
-		}
-	}
-
-	existingMachine, _ := machines[id]
-	updatedMachine.Sensors = existingMachine.Sensors
-
-	updatedMachine.ID = id
-	machines[id] = updatedMachine
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updatedMachine)
-}
-
-func deleteMachine(w http.ResponseWriter, r *http.Request, id string) {
-	delete(machines, id)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// Maintenance Handlers
-func maintenanceHandler(w http.ResponseWriter, r *http.Request) {
-	mutex.Lock()
-	defer mutex.Unlock()
-	switch r.Method {
-	case "GET":
-		listMaintenance(w, r)
-	case "POST":
-		createMaintenance(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func maintenanceItemHandler(w http.ResponseWriter, r *http.Request) {
-	mutex.Lock()
-	defer mutex.Unlock()
-	id := strings.TrimSuffix(r.URL.Path[len("/api/maintenance/"):], "/")
-	if _, ok := maintenance[id]; !ok {
-		http.Error(w, "Maintenance schedule not found", http.StatusNotFound)
-		return
-	}
-	switch r.Method {
-	case "GET":
-		getMaintenance(w, r, id)
-	case "PUT":
-		updateMaintenance(w, r, id)
-	case "DELETE":
-		deleteMaintenance(w, r, id)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func listMaintenance(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	maintenanceList := make([]Maintenance, 0, len(maintenance))
-	for _, m := range maintenance {
-		maintenanceList = append(maintenanceList, m)
-	}
-	json.NewEncoder(w).Encode(maintenanceList)
-}
-
-func createMaintenance(w http.ResponseWriter, r *http.Request) {
-	var m Maintenance
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if _, ok := machines[m.MachineID]; !ok {
-		http.Error(w, "Machine not found", http.StatusBadRequest)
-		return
-	}
-
-	// Handle stock
-	for _, usedItem := range m.UsedStock {
-		item, ok := stock[usedItem.StockItemID]
-		if !ok {
-			http.Error(w, "Stock item not found: "+usedItem.StockItemID, http.StatusBadRequest)
-			return
-		}
-		if item.Quantity < usedItem.Quantity {
-			http.Error(w, "Not enough stock for item: "+item.Name, http.StatusBadRequest)
-			return
-		}
-		item.Quantity -= usedItem.Quantity
-		stock[usedItem.StockItemID] = item
-	}
-
-	m.ID = uuid.New().String()
-	maintenance[m.ID] = m
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(m)
-}
-
-func getMaintenance(w http.ResponseWriter, r *http.Request, id string) {
-	m, _ := maintenance[id]
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(m)
-}
-
-func updateMaintenance(w http.ResponseWriter, r *http.Request, id string) {
-	var updatedMaintenance Maintenance
-	if err := json.NewDecoder(r.Body).Decode(&updatedMaintenance); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if _, ok := machines[updatedMaintenance.MachineID]; !ok {
-		http.Error(w, "Machine not found", http.StatusBadRequest)
-		return
-	}
-
-	// Restore old stock quantities
-	oldMaintenance, ok := maintenance[id]
-	if !ok {
-		http.Error(w, "Maintenance schedule not found for update", http.StatusNotFound)
-		return
-	}
-	for _, usedItem := range oldMaintenance.UsedStock {
-		item, ok := stock[usedItem.StockItemID]
-		if ok {
-			item.Quantity += usedItem.Quantity
-			stock[usedItem.StockItemID] = item
-		}
-	}
-
-	// Deduct new stock quantities
-	for _, usedItem := range updatedMaintenance.UsedStock {
-		item, ok := stock[usedItem.StockItemID]
-		if !ok {
-			http.Error(w, "Stock item not found: "+usedItem.StockItemID, http.StatusBadRequest)
-			return
-		}
-		if item.Quantity < usedItem.Quantity {
-			// Re-add the previously restored stock before erroring out
-			for _, oldUsedItem := range oldMaintenance.UsedStock {
-				item, ok := stock[oldUsedItem.StockItemID]
-				if ok {
-					item.Quantity -= oldUsedItem.Quantity
-					stock[oldUsedItem.StockItemID] = item
-				}
-			}
-			http.Error(w, "Not enough stock for item: "+item.Name, http.StatusBadRequest)
-			return
-		}
-		item.Quantity -= usedItem.Quantity
-		stock[usedItem.StockItemID] = item
-	}
-
-	updatedMaintenance.ID = id
-	maintenance[id] = updatedMaintenance
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updatedMaintenance)
-}
-
-func deleteMaintenance(w http.ResponseWriter, r *http.Request, id string) {
-	m, ok := maintenance[id]
-	if !ok {
-		http.Error(w, "Maintenance schedule not found", http.StatusNotFound)
-		return
-	}
-
-	// Restore stock
-	for _, usedItem := range m.UsedStock {
-		item, ok := stock[usedItem.StockItemID]
-		if ok {
-			item.Quantity += usedItem.Quantity
-			stock[usedItem.StockItemID] = item
-		}
-	}
-
-	delete(maintenance, id)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// Stock Handlers
-func stockHandler(w http.ResponseWriter, r *http.Request) {
-	mutex.Lock()
-	defer mutex.Unlock()
-	switch r.Method {
-	case "GET":
-		listStockItems(w, r)
-	case "POST":
-		createStockItem(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func stockItemHandler(w http.ResponseWriter, r *http.Request) {
-	mutex.Lock()
-	defer mutex.Unlock()
-	id := strings.TrimSuffix(r.URL.Path[len("/api/stock/"):], "/")
-	if _, ok := stock[id]; !ok {
-		http.Error(w, "Stock item not found", http.StatusNotFound)
-		return
-	}
-	switch r.Method {
-	case "GET":
-		getStockItem(w, r, id)
-	case "PUT":
-		updateStockItem(w, r, id)
-	case "DELETE":
-		deleteStockItem(w, r, id)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func listStockItems(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	stockList := make([]StockItem, 0, len(stock))
-	for _, item := range stock {
-		stockList = append(stockList, item)
-	}
-	json.NewEncoder(w).Encode(stockList)
-}
-
-func createStockItem(w http.ResponseWriter, r *http.Request) {
-	var item StockItem
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	item.ID = uuid.New().String()
-	stock[item.ID] = item
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(item)
-}
-
-func getStockItem(w http.ResponseWriter, r *http.Request, id string) {
-	item, _ := stock[id]
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(item)
-}
-
-func updateStockItem(w http.ResponseWriter, r *http.Request, id string) {
-	var updatedItem StockItem
-	if err := json.NewDecoder(r.Body).Decode(&updatedItem); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	updatedItem.ID = id
-	stock[id] = updatedItem
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updatedItem)
-}
-
-func deleteStockItem(w http.ResponseWriter, r *http.Request, id string) {
-	delete(stock, id)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// Operator Handlers
 func operatorsHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -479,11 +259,20 @@ func operatorsHandler(w http.ResponseWriter, r *http.Request) {
 func operatorHandler(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	id := strings.TrimSuffix(r.URL.Path[len("/api/operators/"):], "/")
-	if _, ok := operators[id]; !ok {
+	id := strings.TrimPrefix(r.URL.Path, "/api/operators/")
+
+	// Check if operator exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM operators WHERE id = ?)", id).Scan(&exists)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !exists {
 		http.Error(w, "Operator not found", http.StatusNotFound)
 		return
 	}
+
 	switch r.Method {
 	case "GET":
 		getOperator(w, r, id)
@@ -497,118 +286,965 @@ func operatorHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func listOperators(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	operatorList := make([]Operator, 0, len(operators))
-	for _, operator := range operators {
-		operatorList = append(operatorList, operator)
+	rows, err := db.Query("SELECT id, name FROM operators")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	json.NewEncoder(w).Encode(operatorList)
+	defer rows.Close()
+
+	operators := []Operator{}
+	for rows.Next() {
+		var op Operator
+		if err := rows.Scan(&op.ID, &op.Name); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		operators = append(operators, op)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(operators)
 }
 
 func createOperator(w http.ResponseWriter, r *http.Request) {
-	var operator Operator
-	if err := json.NewDecoder(r.Body).Decode(&operator); err != nil {
+	var op Operator
+	if err := json.NewDecoder(r.Body).Decode(&op); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	operator.ID = uuid.New().String()
-	operators[operator.ID] = operator
+	op.ID = uuid.New().String()
+
+	_, err := db.Exec("INSERT INTO operators (id, name) VALUES (?, ?)", op.ID, op.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(operator)
+	json.NewEncoder(w).Encode(op)
 }
 
 func getOperator(w http.ResponseWriter, r *http.Request, id string) {
-	operator, _ := operators[id]
+	var op Operator
+	err := db.QueryRow("SELECT id, name FROM operators WHERE id = ?", id).Scan(&op.ID, &op.Name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Operator not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(operator)
+	json.NewEncoder(w).Encode(op)
 }
 
 func updateOperator(w http.ResponseWriter, r *http.Request, id string) {
-	var updatedOperator Operator
-	if err := json.NewDecoder(r.Body).Decode(&updatedOperator); err != nil {
+	var op Operator
+	if err := json.NewDecoder(r.Body).Decode(&op); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	updatedOperator.ID = id
-	operators[id] = updatedOperator
+
+	_, err := db.Exec("UPDATE operators SET name = ? WHERE id = ?", op.Name, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	op.ID = id
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updatedOperator)
+	json.NewEncoder(w).Encode(op)
 }
 
 func deleteOperator(w http.ResponseWriter, r *http.Request, id string) {
 	// Optional: Unassign operator from any machines before deleting
-	for k, v := range machines {
-		if v.OperatorID == id {
-			v.OperatorID = ""
-			machines[k] = v
-		}
+	_, err := db.Exec("UPDATE machines SET operatorId = NULL WHERE operatorId = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	delete(operators, id)
+
+	_, err = db.Exec("DELETE FROM operators WHERE id = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func machineSensorsHandler(w http.ResponseWriter, r *http.Request, machineID string) {
-	switch r.Method {
-	case "GET":
-		listMachineSensors(w, r, machineID)
-	case "POST":
-		addSensorToMachine(w, r, machineID)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func listMachines(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT id, name, status, operatorId FROM machines")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-}
+	defer rows.Close()
 
-func machineSensorHandler(w http.ResponseWriter, r *http.Request, machineID, sensorID string) {
-	switch r.Method {
-	case "DELETE":
-		removeSensorFromMachine(w, r, machineID, sensorID)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	machines := []Machine{}
+	for rows.Next() {
+		var m Machine
+		var operatorID sql.NullString
+		if err := rows.Scan(&m.ID, &m.Name, &m.Status, &operatorID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if operatorID.Valid {
+			m.OperatorID = operatorID.String
+		}
+
+		// Check for maintenance today
+		var maintenanceCount int
+		today := time.Now().Format("2006-01-02")
+		err := db.QueryRow("SELECT COUNT(*) FROM maintenance WHERE machineId = ? AND date = ?", m.ID, today).Scan(&maintenanceCount)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if maintenanceCount > 0 {
+			m.Status = "Em manutenção"
+		}
+
+		sensorRows, err := db.Query("SELECT id, name, type FROM sensors WHERE machineId = ?", m.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer sensorRows.Close()
+
+		sensors := []Sensor{}
+		for sensorRows.Next() {
+			var s Sensor
+			if err := sensorRows.Scan(&s.ID, &s.Name, &s.Type); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			sensors = append(sensors, s)
+		}
+		m.Sensors = sensors
+
+		machines = append(machines, m)
 	}
-}
-
-func listMachineSensors(w http.ResponseWriter, r *http.Request, machineID string) {
-	machine, _ := machines[machineID]
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(machine.Sensors)
+	json.NewEncoder(w).Encode(machines)
 }
 
-func addSensorToMachine(w http.ResponseWriter, r *http.Request, machineID string) {
-	var sensor Sensor
-	if err := json.NewDecoder(r.Body).Decode(&sensor); err != nil {
+func createMachine(w http.ResponseWriter, r *http.Request) {
+	var m Machine
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	sensor.ID = uuid.New().String()
+	m.ID = uuid.New().String()
 
-	machine := machines[machineID]
-	machine.Sensors = append(machine.Sensors, sensor)
-	machines[machineID] = machine
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(sensor)
-}
-
-func removeSensorFromMachine(w http.ResponseWriter, r *http.Request, machineID, sensorID string) {
-	machine := machines[machineID]
-	var found bool
-	var updatedSensors []Sensor
-	for _, s := range machine.Sensors {
-		if s.ID == sensorID {
-			found = true
-		} else {
-			updatedSensors = append(updatedSensors, s)
-		}
-	}
-
-	if !found {
-		http.Error(w, "Sensor not found on this machine", http.StatusNotFound)
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	machine.Sensors = updatedSensors
-	machines[machineID] = machine
+	_, err = tx.Exec("INSERT INTO machines (id, name, status, operatorId) VALUES (?, ?, ?, ?)", m.ID, m.Name, m.Status, m.OperatorID)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, s := range m.Sensors {
+		s.ID = uuid.New().String()
+		_, err := tx.Exec("INSERT INTO sensors (id, name, type, machineId) VALUES (?, ?, ?, ?)", s.ID, s.Name, s.Type, m.ID)
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(m)
+}
+
+func getMachine(w http.ResponseWriter, r *http.Request, id string) {
+	var m Machine
+	var operatorID sql.NullString
+	err := db.QueryRow("SELECT id, name, status, operatorId FROM machines WHERE id = ?", id).Scan(&m.ID, &m.Name, &m.Status, &operatorID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Machine not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	if operatorID.Valid {
+		m.OperatorID = operatorID.String
+	}
+
+	// Check for maintenance today
+	var maintenanceCount int
+	today := time.Now().Format("2006-01-02")
+	err = db.QueryRow("SELECT COUNT(*) FROM maintenance WHERE machineId = ? AND date = ?", m.ID, today).Scan(&maintenanceCount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if maintenanceCount > 0 {
+		m.Status = "Em manutenção"
+	}
+
+	sensorRows, err := db.Query("SELECT id, name, type FROM sensors WHERE machineId = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer sensorRows.Close()
+
+	sensors := []Sensor{}
+	for sensorRows.Next() {
+		var s Sensor
+		if err := sensorRows.Scan(&s.ID, &s.Name, &s.Type); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sensors = append(sensors, s)
+	}
+	m.Sensors = sensors
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
+func updateMachine(w http.ResponseWriter, r *http.Request, id string) {
+	var m Machine
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("UPDATE machines SET name = ?, status = ?, operatorId = ? WHERE id = ?", m.Name, m.Status, m.OperatorID, id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("DELETE FROM sensors WHERE machineId = ?", id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, s := range m.Sensors {
+		s.ID = uuid.New().String()
+		_, err := tx.Exec("INSERT INTO sensors (id, name, type, machineId) VALUES (?, ?, ?, ?)", s.ID, s.Name, s.Type, id)
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	m.ID = id
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
+func deleteMachine(w http.ResponseWriter, r *http.Request, id string) {
+	// First, delete associated sensors
+	_, err := db.Exec("DELETE FROM sensors WHERE machineId = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Then, delete the machine
+	_, err = db.Exec("DELETE FROM machines WHERE id = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func getMachineSensors(w http.ResponseWriter, r *http.Request, machineID string) {
+	rows, err := db.Query("SELECT id, name, type FROM sensors WHERE machineId = ?", machineID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	sensors := []Sensor{}
+	for rows.Next() {
+		var s Sensor
+		if err := rows.Scan(&s.ID, &s.Name, &s.Type); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sensors = append(sensors, s)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sensors)
+}
+
+func createMachineSensor(w http.ResponseWriter, r *http.Request, machineID string) {
+	var s Sensor
+	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.ID = uuid.New().String()
+
+	_, err := db.Exec("INSERT INTO sensors (id, name, type, machineId) VALUES (?, ?, ?, ?)", s.ID, s.Name, s.Type, machineID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(s)
+}
+
+func getMaintenances(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT id, machineId, date, description, status FROM maintenance")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	maintenances := make([]Maintenance, 0)
+	for rows.Next() {
+		var m Maintenance
+		if err := rows.Scan(&m.ID, &m.MachineID, &m.Date, &m.Description, &m.Status); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		stockRows, err := db.Query("SELECT stockId, quantity FROM maintenance_stock WHERE maintenanceId = ?", m.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer stockRows.Close()
+
+		usedStock := make([]UsedStockItem, 0)
+		for stockRows.Next() {
+			var item UsedStockItem
+			if err := stockRows.Scan(&item.StockID, &item.Quantity); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			usedStock = append(usedStock, item)
+		}
+		m.UsedStock = usedStock
+
+		maintenances = append(maintenances, m)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(maintenances)
+}
+
+func maintenanceRootHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		getMaintenances(w, r)
+	case "POST":
+		createMaintenance(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func maintenanceIdHandler(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/maintenance/")
+	if id == "" {
+		if r.Method == "GET" {
+			getMaintenances(w, r)
+		} else {
+			http.Error(w, "Method not allowed for /api/maintenance/", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	switch r.Method {
+	case "GET":
+		getMaintenance(w, r, id)
+	case "PUT":
+		updateMaintenance(w, r, id)
+	case "DELETE":
+		deleteMaintenance(w, r, id)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func reportsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if path == "/api/reports/used-stock" {
+		getUsedStockReport(w, r)
+	} else if path == "/api/reports/scheduled-maintenances" {
+		getScheduledMaintenancesReport(w, r)
+	} else {
+		http.NotFound(w, r)
+	}
+}
+
+func getUsedStockReport(w http.ResponseWriter, r *http.Request) {
+	month := r.URL.Query().Get("month")
+	year := r.URL.Query().Get("year")
+
+	query := `
+		SELECT s.name, ms.quantity, m.date
+		FROM maintenance_stock ms
+		JOIN stock s ON ms.stockId = s.id
+		JOIN maintenance m ON ms.maintenanceId = m.id
+	`
+	args := []interface{}{}
+
+	if month != "" && year != "" {
+		query += " WHERE CAST(strftime('%m', m.date) AS INTEGER) = ? AND CAST(strftime('%Y', m.date) AS INTEGER) = ?"
+		args = append(args, month, year)
+	}
+
+	query += " ORDER BY m.date DESC"
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	report := make([]struct {
+		ItemName string `json:"itemName"`
+		Quantity int    `json:"quantity"`
+		Date     string `json:"date"`
+	}, 0)
+	for rows.Next() {
+		var item struct {
+			ItemName string `json:"itemName"`
+			Quantity int    `json:"quantity"`
+			Date     string `json:"date"`
+		}
+		if err := rows.Scan(&item.ItemName, &item.Quantity, &item.Date); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		report = append(report, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
+}
+
+func getScheduledMaintenancesReport(w http.ResponseWriter, r *http.Request) {
+	month := r.URL.Query().Get("month")
+	year := r.URL.Query().Get("year")
+
+	query := `
+		SELECT maint.id, m.name, maint.date, maint.description
+		FROM maintenance maint
+		JOIN machines m ON maint.machineId = m.id
+		WHERE maint.status = 'scheduled'
+	`
+	args := []interface{}{}
+
+	if month != "" && year != "" {
+		query += " AND CAST(strftime('%m', maint.date) AS INTEGER) = ? AND CAST(strftime('%Y', maint.date) AS INTEGER) = ?"
+		args = append(args, month, year)
+	}
+
+	query += " ORDER BY maint.date"
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	report := make([]struct {
+		Id          string `json:"id"`
+		MachineName string `json:"machineName"`
+		Date        string `json:"date"`
+		Description string `json:"description"`
+	}, 0)
+	for rows.Next() {
+		var item struct {
+			Id          string `json:"id"`
+			MachineName string `json:"machineName"`
+			Date        string `json:"date"`
+			Description string `json:"description"`
+		}
+		if err := rows.Scan(&item.Id, &item.MachineName, &item.Date, &item.Description); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		report = append(report, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
+}
+
+func listMaintenances(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT id, machineId, description, date, status FROM maintenance")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	maintenances := []Maintenance{}
+	for rows.Next() {
+		var m Maintenance
+		if err := rows.Scan(&m.ID, &m.MachineID, &m.Description, &m.Date, &m.Status); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Fetch used stock for each maintenance
+		stockRows, err := db.Query("SELECT stockId, quantity FROM maintenance_stock WHERE maintenanceId = ?", m.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		usedStock := []UsedStockItem{}
+		for stockRows.Next() {
+			var item UsedStockItem
+			if err := stockRows.Scan(&item.StockID, &item.Quantity); err != nil {
+				stockRows.Close()
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			usedStock = append(usedStock, item)
+		}
+		stockRows.Close()
+		m.UsedStock = usedStock
+		maintenances = append(maintenances, m)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(maintenances)
+}
+
+func reportUsedStock(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(`
+		SELECT si.name, usi.quantity, m.date 
+		FROM used_stock_items usi
+		JOIN stock_items si ON usi.stock_item_id = si.id
+		JOIN maintenance m ON usi.maintenance_id = m.id
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type UsedStockReportItem struct {
+		ItemName string `json:"itemName"`
+		Quantity int    `json:"quantity"`
+		Date     string `json:"date"`
+	}
+
+	var report []UsedStockReportItem
+	for rows.Next() {
+		var item UsedStockReportItem
+		if err := rows.Scan(&item.ItemName, &item.Quantity, &item.Date); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		report = append(report, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
+}
+
+func reportScheduledMaintenances(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(`
+		SELECT m.id, m.date, m.description, ma.name 
+		FROM maintenance m
+		JOIN machines ma ON m.machine_id = ma.id
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type ScheduledMaintenanceReportItem struct {
+		ID          string `json:"id"`
+		Date        string `json:"date"`
+		Description string `json:"description"`
+		MachineName string `json:"machineName"`
+	}
+
+	var report []ScheduledMaintenanceReportItem
+	for rows.Next() {
+		var item ScheduledMaintenanceReportItem
+		if err := rows.Scan(&item.ID, &item.Date, &item.Description, &item.MachineName); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		report = append(report, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
+}
+
+func createMaintenance(w http.ResponseWriter, r *http.Request) {
+	var maint Maintenance
+	if err := json.NewDecoder(r.Body).Decode(&maint); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	maint.ID = uuid.New().String()
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO maintenance(id, machineId, date, description, status) VALUES(?, ?, ?, ?, ?)")
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(maint.ID, maint.MachineID, maint.Date, maint.Description, "scheduled")
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(maint.UsedStock) > 0 {
+		stockStmt, err := tx.Prepare("INSERT INTO maintenance_stock(maintenanceId, stockId, quantity) VALUES(?, ?, ?)")
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer stockStmt.Close()
+
+		for _, item := range maint.UsedStock {
+			_, err = stockStmt.Exec(maint.ID, item.StockID, item.Quantity)
+			if err != nil {
+				tx.Rollback()
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			// Update stock quantity
+			updateStockStmt, err := tx.Prepare("UPDATE stock SET quantity = quantity - ? WHERE id = ?")
+			if err != nil {
+				tx.Rollback()
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer updateStockStmt.Close()
+
+			_, err = updateStockStmt.Exec(item.Quantity, item.StockID)
+			if err != nil {
+				tx.Rollback()
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	tx.Commit()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(maint)
+}
+
+func getMaintenance(w http.ResponseWriter, r *http.Request, id string) {
+	var maint Maintenance
+	err := db.QueryRow("SELECT id, machineId, date, description, status FROM maintenance WHERE id = ?", id).Scan(&maint.ID, &maint.MachineID, &maint.Date, &maint.Description, &maint.Status)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	rows, err := db.Query("SELECT stockId, quantity FROM maintenance_stock WHERE maintenanceId = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var usedStock UsedStockItem
+		if err := rows.Scan(&usedStock.StockID, &usedStock.Quantity); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		maint.UsedStock = append(maint.UsedStock, usedStock)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(maint)
+}
+
+func updateMaintenance(w http.ResponseWriter, r *http.Request, id string) {
+	var maint Maintenance
+	if err := json.NewDecoder(r.Body).Decode(&maint); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("UPDATE maintenance SET machineId = ?, date = ?, description = ?, status = ? WHERE id = ?", maint.MachineID, maint.Date, maint.Description, maint.Status, id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec("DELETE FROM maintenance_stock WHERE maintenanceId = ?", id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(maint.UsedStock) > 0 {
+		stockStmt, err := tx.Prepare("INSERT INTO maintenance_stock(maintenanceId, stockId, quantity) VALUES(?, ?, ?)")
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer stockStmt.Close()
+
+		for _, item := range maint.UsedStock {
+			_, err = stockStmt.Exec(id, item.StockID, item.Quantity)
+			if err != nil {
+				tx.Rollback()
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	tx.Commit()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(maint)
+}
+
+func deleteMaintenance(w http.ResponseWriter, r *http.Request, id string) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Restore stock quantities
+	var usedStock []UsedStockItem
+	rows, err := tx.Query("SELECT stockId, quantity FROM maintenance_stock WHERE maintenanceId = ?", id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for rows.Next() {
+		var item UsedStockItem
+		if err := rows.Scan(&item.StockID, &item.Quantity); err != nil {
+			rows.Close()
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		usedStock = append(usedStock, item)
+	}
+	rows.Close()
+
+	for _, item := range usedStock {
+		_, err = tx.Exec("UPDATE stock SET quantity = quantity + ? WHERE id = ?", item.Quantity, item.StockID)
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Delete from maintenance_stock
+	_, err = tx.Exec("DELETE FROM maintenance_stock WHERE maintenanceId = ?", id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Delete from maintenance
+	_, err = tx.Exec("DELETE FROM maintenance WHERE id = ?", id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func stockHandler(w http.ResponseWriter, r *http.Request) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	switch r.Method {
+	case "GET":
+		listStock(w, r)
+	case "POST":
+		createStockItem(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func stockItemHandler(w http.ResponseWriter, r *http.Request) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	id := strings.TrimPrefix(r.URL.Path, "/api/stock/")
+
+	// Check if stock item exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM stock WHERE id = ?)", id).Scan(&exists)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "Stock item not found", http.StatusNotFound)
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		getStockItem(w, r, id)
+	case "PUT":
+		updateStockItem(w, r, id)
+	case "DELETE":
+		deleteStockItem(w, r, id)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func listStock(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT id, name, quantity, unit, value, location FROM stock")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	stock := []StockItem{}
+	for rows.Next() {
+		var item StockItem
+		if err := rows.Scan(&item.ID, &item.Name, &item.Quantity, &item.Unit, &item.Value, &item.Location); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		stock = append(stock, item)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stock)
+}
+
+func createStockItem(w http.ResponseWriter, r *http.Request) {
+	var item StockItem
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	item.ID = uuid.New().String()
+
+	_, err := db.Exec("INSERT INTO stock (id, name, quantity, unit, value, location) VALUES (?, ?, ?, ?, ?, ?)", item.ID, item.Name, item.Quantity, item.Unit, item.Value, item.Location)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(item)
+}
+
+func getStockItem(w http.ResponseWriter, r *http.Request, id string) {
+	var item StockItem
+	err := db.QueryRow("SELECT id, name, quantity, unit, value, location FROM stock WHERE id = ?", id).Scan(&item.ID, &item.Name, &item.Quantity, &item.Unit, &item.Value, &item.Location)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Stock item not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
+}
+
+func updateStockItem(w http.ResponseWriter, r *http.Request, id string) {
+	var item StockItem
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err := db.Exec("UPDATE stock SET name = ?, quantity = ?, unit = ?, value = ?, location = ? WHERE id = ?", item.Name, item.Quantity, item.Unit, item.Value, item.Location, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	item.ID = id
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
+}
+
+func deleteStockItem(w http.ResponseWriter, r *http.Request, id string) {
+	_, err := db.Exec("DELETE FROM stock WHERE id = ?", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -46,7 +46,7 @@ export const deleteMachine = async (id: string): Promise<void> => {
 };
 
 // Maintenance API
-export const getMaintenance = async (): Promise<Maintenance[]> => {
+export const getMaintenances = async (): Promise<Maintenance[]> => {
     const response = await fetch(`${API_URL}/maintenance`);
     if (!response.ok) {
         throw new Error('Failed to fetch maintenance schedules');
@@ -99,7 +99,9 @@ export const getStockItems = async (): Promise<StockItem[]> => {
         throw new Error('Failed to fetch stock items');
     }
     return response.json();
-}
+};
+
+
 
 export const createStockItem = async (item: Omit<StockItem, 'id'>): Promise<StockItem> => {
     const response = await fetch(`${API_URL}/stock`, {
@@ -202,4 +204,23 @@ export const removeSensorFromMachine = async (machineId: string, sensorId: strin
     if (!response.ok) {
         throw new Error('Failed to remove sensor from machine');
     }
+};
+
+// Reports API
+export const getUsedStockReport = async (month: number, year: number): Promise<any[]> => {
+    const response = await fetch(`${API_URL}/reports/used-stock?month=${month}&year=${year}`);
+    if (!response.ok) {
+        throw new Error('Failed to fetch used stock report');
+    }
+    const data = await response.json();
+    return data || [];
+};
+
+export const getScheduledMaintenancesReport = async (month: number, year: number): Promise<any[]> => {
+    const response = await fetch(`${API_URL}/reports/scheduled-maintenances?month=${month}&year=${year}`);
+    if (!response.ok) {
+        throw new Error('Failed to fetch scheduled maintenances report');
+    }
+    const data = await response.json();
+    return data || [];
 };

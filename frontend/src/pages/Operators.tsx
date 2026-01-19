@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { getOperators, createOperator, updateOperator, deleteOperator } from '../api';
 import { Operator } from '../types';
 import OperatorForm from '../components/OperatorForm';
+import Modal from '../components/Modal';
 
 const Operators: React.FC = () => {
     const [operators, setOperators] = useState<Operator[]>([]);
     const [editingOperator, setEditingOperator] = useState<Operator | null>(null);
-    const [isFormOpen, setIsFormOpen] = useState(false);
+    const [isModalOpen, setIsModalOpen] = useState(false);
 
     useEffect(() => {
         fetchOperators();
@@ -19,12 +20,12 @@ const Operators: React.FC = () => {
 
     const handleCreate = () => {
         setEditingOperator(null);
-        setIsFormOpen(true);
+        setIsModalOpen(true);
     };
 
     const handleEdit = (operator: Operator) => {
         setEditingOperator(operator);
-        setIsFormOpen(true);
+        setIsModalOpen(true);
     };
 
     const handleDelete = async (id: string) => {
@@ -39,7 +40,7 @@ const Operators: React.FC = () => {
             await createOperator(operator);
         }
         fetchOperators();
-        setIsFormOpen(false);
+        setIsModalOpen(false);
     };
 
     return (
@@ -51,13 +52,13 @@ const Operators: React.FC = () => {
             >
                 Add Operator
             </button>
-            {isFormOpen && (
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)}>
                 <OperatorForm
                     operator={editingOperator}
                     onSave={handleSave}
-                    onCancel={() => setIsFormOpen(false)}
+                    onCancel={() => setIsModalOpen(false)}
                 />
-            )}
+            </Modal>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {operators.map((operator) => (
                     <div key={operator.id} className="bg-white p-4 rounded shadow">

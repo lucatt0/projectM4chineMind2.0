@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getMaintenance, createMaintenance, updateMaintenance, deleteMaintenance, getMachines, getStockItems } from '../api';
+import { getMaintenances, createMaintenance, updateMaintenance, deleteMaintenance, getMachines, getStockItems } from '../api';
 import { Maintenance, Machine, StockItem, UsedStockItem } from '../types';
 
 const MaintenancePage = () => {
@@ -19,7 +19,7 @@ const MaintenancePage = () => {
     const fetchData = async () => {
         try {
             setIsLoading(true);
-            const [schedules, machinesData, stockData] = await Promise.all([getMaintenance(), getMachines(), getStockItems()]);
+            const [schedules, machinesData, stockData] = await Promise.all([getMaintenances(), getMachines(), getStockItems()]);
             setMaintenanceSchedules(schedules);
             setMachines(machinesData);
             setStockItems(stockData);
@@ -61,7 +61,7 @@ const MaintenancePage = () => {
     };
 
     const addStockItem = () => {
-        const newStockItem: UsedStockItem = { stockItemId: '', quantity: 1 };
+        const newStockItem: UsedStockItem = { stockId: '', quantity: 1 };
         setCurrentMaintenance(prev => ({
             ...prev,
             usedStock: [...(prev.usedStock || []), newStockItem]
@@ -84,10 +84,11 @@ const MaintenancePage = () => {
 
         const payload = {
             ...currentMaintenance,
+            date: new Date(currentMaintenance.date + 'T00:00:00').toISOString(),
             usedStock: (currentMaintenance.usedStock || []).map(item => ({
                 ...item,
                 quantity: Number(item.quantity)
-            })).filter(item => item.stockItemId && item.quantity > 0)
+            })).filter(item => item.stockId && item.quantity > 0)
         };
 
         try {
@@ -121,8 +122,8 @@ const MaintenancePage = () => {
         return machine ? machine.name : 'Unknown Machine';
     };
 
-    const getStockItemName = (stockItemId: string) => {
-        const item = stockItems.find(i => i.id === stockItemId);
+    const getStockItemName = (stockId: string) => {
+        const item = stockItems.find(i => i.id === stockId);
         return item ? item.name : 'Unknown Item';
     }
 
@@ -149,7 +150,7 @@ const MaintenancePage = () => {
                                 <h3 className="font-semibold">Used Stock:</h3>
                                 <ul className="list-disc list-inside">
                                     {schedule.usedStock.map((item, index) => (
-                                        <li key={index}>{getStockItemName(item.stockItemId)}: {item.quantity}</li>
+                                        <li key={index}>{getStockItemName(item.stockId)}: {item.quantity}</li>
                                     ))}
                                 </ul>
                             </div>
@@ -216,8 +217,8 @@ const MaintenancePage = () => {
                                 {currentMaintenance.usedStock?.map((item, index) => (
                                     <div key={index} className="flex items-center space-x-2 mt-2">
                                         <select
-                                            value={item.stockItemId}
-                                            onChange={(e) => handleStockChange(index, 'stockItemId', e.target.value)}
+                                            value={item.stockId}
+                                            onChange={(e) => handleStockChange(index, 'stockId', e.target.value)}
                                             className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
                                         >
                                             <option value="">Select Stock Item</option>

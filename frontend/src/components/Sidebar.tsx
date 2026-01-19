@@ -5,6 +5,7 @@ const navigation = [
     { name: 'Stock', href: '/stock', icon: 'S' },
     { name: 'Operators', href: '/operators', icon: 'O' },
     { name: 'Maintenance', href: '/maintenance', icon: 'C' },
+    { name: 'Reports', href: '/reports', icon: 'R' },
 ]
 
 function Sidebar() {

@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import Stock from './pages/Stock';
 import Operators from './pages/Operators';
 import MaintenancePage from './pages/Maintenance';
+import Reports from './pages/Reports';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
             <Route path="/stock" element={<Stock />} />
             <Route path="/operators" element={<Operators />} />
             <Route path="/maintenance" element={<MaintenancePage />} />
+            <Route path="/reports" element={<Reports />} />
           </Routes>
         </main>
       </div>

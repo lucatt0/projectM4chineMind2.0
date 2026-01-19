@@ -35,6 +35,6 @@ export interface Maintenance {
 }
 
 export interface UsedStockItem {
-    stockItemId: string;
+    stockId: string;
     quantity: number;
 }
