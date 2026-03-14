@@ -31,6 +31,7 @@ export interface Maintenance {
     machineId: string;
     date: string;
     description: string;
+    status: string;
     usedStock: UsedStockItem[];
 }
 

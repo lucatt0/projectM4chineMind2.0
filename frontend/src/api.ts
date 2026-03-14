@@ -1,6 +1,6 @@
 import { Machine, StockItem, Operator, Sensor, Maintenance } from './types';
 
-const API_URL = 'http://localhost:8080/api';
+const API_URL = '/api';
 
 // Machine API
 export const getMachines = async (): Promise<Machine[]> => {
@@ -46,8 +46,8 @@ export const deleteMachine = async (id: string): Promise<void> => {
 };
 
 // Maintenance API
-export const getMaintenances = async (): Promise<Maintenance[]> => {
-    const response = await fetch(`${API_URL}/maintenance`);
+export const getMaintenances = async (month: number, year: number): Promise<Maintenance[]> => {
+    const response = await fetch(`${API_URL}/maintenance?month=${month}&year=${year}`);
     if (!response.ok) {
         throw new Error('Failed to fetch maintenance schedules');
     }
@@ -90,6 +90,8 @@ export const deleteMaintenance = async (id: string): Promise<void> => {
         throw new Error('Failed to delete maintenance schedule');
     }
 };
+
+export const completeMaintenance = (id: string) => fetch(`${API_URL}/maintenances/${id}/complete`, { method: 'PATCH' });
 
 
 // Stock API calls

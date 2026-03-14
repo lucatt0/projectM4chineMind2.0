@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getMaintenances, createMaintenance, updateMaintenance, deleteMaintenance, getMachines, getStockItems } from '../api';
+import { getMaintenances, createMaintenance, updateMaintenance, deleteMaintenance, getMachines, getStockItems, completeMaintenance } from '../api';
 import { Maintenance, Machine, StockItem, UsedStockItem } from '../types';
 
 const MaintenancePage = () => {
@@ -11,15 +11,17 @@ const MaintenancePage = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [currentMaintenance, setCurrentMaintenance] = useState<Partial<Maintenance>>({ usedStock: [] });
     const [isEditing, setIsEditing] = useState(false);
+    const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
+    const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
 
     useEffect(() => {
         fetchData();
-    }, []);
+    }, [selectedMonth, selectedYear]);
 
     const fetchData = async () => {
         try {
             setIsLoading(true);
-            const [schedules, machinesData, stockData] = await Promise.all([getMaintenances(), getMachines(), getStockItems()]);
+            const [schedules, machinesData, stockData] = await Promise.all([getMaintenances(selectedMonth, selectedYear), getMachines(), getStockItems()]);
             setMaintenanceSchedules(schedules);
             setMachines(machinesData);
             setStockItems(stockData);
@@ -117,6 +119,18 @@ const MaintenancePage = () => {
         }
     };
 
+    const handleComplete = async (id: string) => {
+        if (window.confirm('Are you sure you want to mark this maintenance as complete?')) {
+            try {
+                await completeMaintenance(id);
+                fetchData();
+            } catch (err) {
+                setError('Failed to complete maintenance schedule.');
+                console.error(err);
+            }
+        }
+    };
+
     const getMachineName = (machineId: string) => {
         const machine = machines.find(m => m.id === machineId);
         return machine ? machine.name : 'Unknown Machine';
@@ -126,6 +140,26 @@ const MaintenancePage = () => {
         const item = stockItems.find(i => i.id === stockId);
         return item ? item.name : 'Unknown Item';
     }
+
+    const getDateStatusColor = (dateString: string) => {
+        const today = new Date();
+        const maintenanceDate = new Date(dateString);
+        today.setHours(0, 0, 0, 0);
+        maintenanceDate.setHours(0, 0, 0, 0);
+
+        const diffTime = maintenanceDate.getTime() - today.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays < 0) {
+            return 'bg-red-300'; // Atrasado
+        } else if (diffDays <= 3) {
+            return 'bg-red-500'; // Muito próximo
+        } else if (diffDays <= 7) {
+            return 'bg-yellow-400'; // Próximo
+        } else {
+            return 'bg-green-400'; // Longe
+        }
+    };
 
     if (isLoading) return <div className="text-center p-4">Loading...</div>;
     if (error) return <div className="text-center p-4 text-red-500">{error}</div>;
@@ -139,9 +173,35 @@ const MaintenancePage = () => {
                 </button>
             </div>
 
+            <div className="flex items-end space-x-4 mb-4">
+                <div>
+                    <label htmlFor="month-select" className="block text-sm font-medium text-gray-700">Mês</label>
+                    <select
+                        id="month-select"
+                        value={selectedMonth}
+                        onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                    >
+                        {Array.from({ length: 12 }, (_, i) => (
+                            <option key={i + 1} value={i + 1}>{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label htmlFor="year-select" className="block text-sm font-medium text-gray-700">Ano</label>
+                    <input
+                        type="number"
+                        id="year-select"
+                        value={selectedYear}
+                        onChange={(e) => setSelectedYear(Number(e.target.value))}
+                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                    />
+                </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {maintenanceSchedules.map(schedule => (
-                    <div key={schedule.id} className="bg-white shadow-md rounded-lg p-4">
+                    <div key={schedule.id} className={`${schedule.status === 'Completed' ? 'bg-white' : getDateStatusColor(schedule.date)} shadow-md rounded-lg p-4`}>
                         <h2 className="text-xl font-semibold">{getMachineName(schedule.machineId)}</h2>
                         <p className="text-gray-600">Date: {new Date(schedule.date).toLocaleDateString()}</p>
                         <p className="mt-2">{schedule.description}</p>
@@ -156,6 +216,11 @@ const MaintenancePage = () => {
                             </div>
                         )}
                         <div className="mt-4 flex justify-end space-x-2">
+                            {schedule.status !== 'Completed' && (
+                                <button onClick={() => handleComplete(schedule.id)} className="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded">
+                                    Complete
+                                </button>
+                            )}
                             <button onClick={() => handleOpenModal(schedule)} className="bg-yellow-500 hover:bg-yellow-700 text-white font-bold py-1 px-3 rounded">
                                 Edit
                             </button>

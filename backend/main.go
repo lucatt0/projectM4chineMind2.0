@@ -3,8 +3,10 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +88,15 @@ func main() {
 	mux.HandleFunc("/api/maintenance", maintenanceRootHandler)
 	mux.HandleFunc("/api/maintenance/", maintenanceIdHandler)
 	mux.HandleFunc("/api/reports/", reportsHandler)
+
+	// Rota para marcar manutenção como concluída
+	mux.HandleFunc("/api/maintenances/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/complete") {
+			completeMaintenanceHandler(w, r)
+		} else {
+			maintenanceIdHandler(w, r)
+		}
+	})
 
 	handler := corsMiddleware(mux)
 
@@ -623,7 +634,25 @@ func createMachineSensor(w http.ResponseWriter, r *http.Request, machineID strin
 }
 
 func getMaintenances(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, machineId, date, description, status FROM maintenance")
+	month := r.URL.Query().Get("month")
+	year := r.URL.Query().Get("year")
+
+	var rows *sql.Rows
+	var err error
+
+	if month != "" && year != "" {
+		query := `
+			SELECT id, machineId, date, description, status 
+			FROM maintenance 
+			WHERE strftime('%m', date) = ? AND strftime('%Y', date) = ?
+		`
+		// Pad month with leading zero if necessary
+		monthInt, _ := strconv.Atoi(month)
+		rows, err = db.Query(query, fmt.Sprintf("%02d", monthInt), year)
+	} else {
+		rows, err = db.Query("SELECT id, machineId, date, description, status FROM maintenance")
+	}
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -694,6 +723,33 @@ func maintenanceIdHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func completeMaintenanceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/maintenances/")
+	id := strings.TrimSuffix(path, "/complete")
+
+	stmt, err := db.Prepare("UPDATE maintenance SET status = ? WHERE id = ?")
+	if err != nil {
+		log.Printf("Error preparing statement: %v", err)
+		http.Error(w, "Failed to update maintenance status", http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec("Completed", id)
+	if err != nil {
+		log.Printf("Error executing statement: %v", err)
+		http.Error(w, "Failed to update maintenance status", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func reportsHandler(w http.ResponseWriter, r *http.Request) {

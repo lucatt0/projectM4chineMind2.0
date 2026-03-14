@@ -2,22 +2,15 @@
 import React, { useEffect, useState } from 'react';
 import { getUsedStockReport, getScheduledMaintenancesReport } from '../api';
 
-interface UsedStockReportItem {
-    itemName: string;
-    quantity: number;
-    date: string;
-}
-
-interface ScheduledMaintenanceReportItem {
-    id: string;
+interface ReportItem {
+    type: 'usedStock' | 'scheduledMaintenance';
     date: string;
     description: string;
-    machineName: string;
+    details: string;
 }
 
 const Reports: React.FC = () => {
-    const [usedStock, setUsedStock] = useState<UsedStockReportItem[]>([]);
-    const [scheduledMaintenances, setScheduledMaintenances] = useState<ScheduledMaintenanceReportItem[]>([]);
+    const [reportData, setReportData] = useState<ReportItem[]>([]);
     const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
     const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
 
@@ -27,8 +20,26 @@ const Reports: React.FC = () => {
                 getUsedStockReport(selectedMonth, selectedYear),
                 getScheduledMaintenancesReport(selectedMonth, selectedYear),
             ]);
-            setUsedStock(usedStockRes);
-            setScheduledMaintenances(scheduledMaintenancesRes);
+
+            const usedStockFormatted: ReportItem[] = usedStockRes.map((item: any) => ({
+                type: 'usedStock',
+                date: item.date,
+                description: `Item: ${item.itemName}`,
+                details: `Quantidade: ${item.quantity}`,
+            }));
+
+            const scheduledMaintenancesFormatted: ReportItem[] = scheduledMaintenancesRes.map((item: any) => ({
+                type: 'scheduledMaintenance',
+                date: item.date,
+                description: `Máquina: ${item.machineName}`,
+                details: item.description,
+            }));
+
+            const combinedData = [...usedStockFormatted, ...scheduledMaintenancesFormatted].sort(
+                (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+            );
+
+            setReportData(combinedData);
         } catch (error) {
             console.error('Error fetching reports:', error);
         }
@@ -38,12 +49,12 @@ const Reports: React.FC = () => {
         fetchReports();
     }, [selectedMonth, selectedYear]);
 
-    const handlePrint = (title: string, tableId: string) => {
-        const printContent = document.getElementById(tableId)?.outerHTML;
+    const handlePrint = () => {
+        const printContent = document.getElementById('reportTable')?.outerHTML;
         if (printContent) {
             const printWindow = window.open('', '', 'height=600,width=800');
             if (printWindow) {
-                printWindow.document.write(`<html><head><title>${title}</title></head><body>`);
+                printWindow.document.write(`<html><head><title>Relatório Unificado</title></head><body>`);
                 printWindow.document.write(printContent);
                 printWindow.document.write('</body></html>');
                 printWindow.document.close();
@@ -54,7 +65,7 @@ const Reports: React.FC = () => {
 
     return (
         <div className="container mx-auto p-4">
-            <h1 className="text-2xl font-bold mb-4">Relatórios</h1>
+            <h1 className="text-2xl font-bold mb-4">Relatório Unificado</h1>
 
             <div className="flex items-end space-x-4 mb-4">
                 <div>
@@ -90,61 +101,31 @@ const Reports: React.FC = () => {
 
             <div className="mb-8">
                 <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold">Itens de Estoque Utilizados</h2>
+                    <h2 className="text-xl font-semibold">Relatório Consolidado</h2>
                     <button
-                        onClick={() => handlePrint('Relatório de Itens de Estoque Utilizados', 'usedStockTable')}
+                        onClick={handlePrint}
                         className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
                     >
                         Imprimir
                     </button>
                 </div>
-                <div id="usedStockTable">
+                <div id="reportTable">
                     <table className="min-w-full bg-white">
                         <thead>
                             <tr>
-                                <th className="py-2 px-4 border-b">Item</th>
-                                <th className="py-2 px-4 border-b">Quantidade</th>
                                 <th className="py-2 px-4 border-b">Data</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {usedStock.map((item, index) => (
-                                <tr key={index}>
-                                    <td className="py-2 px-4 border-b">{item.itemName}</td>
-                                    <td className="py-2 px-4 border-b">{item.quantity}</td>
-                                    <td className="py-2 px-4 border-b">{new Date(item.date).toLocaleDateString()}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <div>
-                <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold">Manutenções Agendadas</h2>
-                    <button
-                        onClick={() => handlePrint('Relatório de Manutenções Agendadas', 'scheduledMaintenancesTable')}
-                        className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-                    >
-                        Imprimir
-                    </button>
-                </div>
-                <div id="scheduledMaintenancesTable">
-                    <table className="min-w-full bg-white">
-                        <thead>
-                            <tr>
-                                <th className="py-2 px-4 border-b">Máquina</th>
-                                <th className="py-2 px-4 border-b">Data</th>
+                                <th className="py-2 px-4 border-b">Tipo</th>
                                 <th className="py-2 px-4 border-b">Descrição</th>
+                                <th className="py-2 px-4 border-b">Detalhes</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {scheduledMaintenances.map((item) => (
-                                <tr key={item.id}>
-                                    <td className="py-2 px-4 border-b">{item.machineName}</td>
+                            {reportData.map((item, index) => (
+                                <tr key={index}>
                                     <td className="py-2 px-4 border-b">{new Date(item.date).toLocaleDateString()}</td>
+                                    <td className="py-2 px-4 border-b">{item.type === 'usedStock' ? 'Uso de Estoque' : 'Manutenção Agendada'}</td>
                                     <td className="py-2 px-4 border-b">{item.description}</td>
+                                    <td className="py-2 px-4 border-b">{item.details}</td>
                                 </tr>
                             ))}
                         </tbody>
